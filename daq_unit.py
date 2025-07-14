@@ -461,14 +461,19 @@ class MainPage(QWidget):
 # =============================================================================
 
 class MonitoringPage(QWidget):
-    # This class remains the same, but will perform better due to the
-    # optimized signal handling from the worker thread.
     def __init__(self, serial_thread):
         super().__init__()
         self.serial_thread = serial_thread
         self.init_ui()
-        # Connect to the new batched signal
         serial_thread.data_received_batch.connect(self.process_data_batch)
+        
+        # Data buffers for graphing
+        self.depth_data = deque(maxlen=100)
+        self.roll_data = deque(maxlen=100)
+        self.pitch_data = deque(maxlen=100)
+        self.heading_data = deque(maxlen=100)
+        self.timestamps = deque(maxlen=100)
+        self.last_update = 0
 
     def _create_param_box(self, title, subtitle):
         group = QGroupBox(title)
@@ -489,6 +494,14 @@ class MonitoringPage(QWidget):
     def init_ui(self):
         main_layout = QVBoxLayout(self)
         main_layout.setSpacing(15)
+        
+        # Status indicator
+        self.status_label = QLabel("Awaiting data...")
+        self.status_label.setAlignment(Qt.AlignCenter)
+        self.status_label.setStyleSheet("font-weight: bold; color: #666;")
+        main_layout.addWidget(self.status_label)
+        
+        # Instrument mapping
         mapping_group = QGroupBox("Instrument Port Mapping")
         mapping_layout = QVBoxLayout(mapping_group)
         self.table = QTableWidget(4, 2)
@@ -509,6 +522,8 @@ class MonitoringPage(QWidget):
             self.table.setItem(row, 1, QTableWidgetItem(desc))
         mapping_layout.addWidget(self.table)
         main_layout.addWidget(mapping_group)
+        
+        # Data display
         data_group = QGroupBox("Live Sensor Measurements")
         grid_layout = QGridLayout(data_group)
         grid_layout.setSpacing(15)
@@ -524,46 +539,173 @@ class MonitoringPage(QWidget):
             grid_layout.addWidget(box, i // 2, i % 2)
             self.param_labels[title] = label
         main_layout.addWidget(data_group)
-        main_layout.addStretch()
+        
+        # Graphs
+        graph_group = QGroupBox("Sensor History")
+        graph_layout = QVBoxLayout(graph_group)
+        
+        # Depth graph
+        depth_graph = QWidget()
+        depth_layout = QVBoxLayout(depth_graph)
+        depth_layout.addWidget(QLabel("Depth History"))
+        self.depth_plot = pg.PlotWidget()
+        self.depth_plot.setBackground('w')
+        self.depth_plot.setLabel('left', "Depth (m)")
+        self.depth_plot.setLabel('bottom', "Time")
+        self.depth_plot.showGrid(x=True, y=True, alpha=0.3)
+        self.depth_curve = self.depth_plot.plot(pen=pg.mkPen(color='b', width=2))
+        depth_layout.addWidget(self.depth_plot)
+        
+        # Attitude graph
+        attitude_graph = QWidget()
+        attitude_layout = QVBoxLayout(attitude_graph)
+        attitude_layout.addWidget(QLabel("Attitude History"))
+        self.attitude_plot = pg.PlotWidget()
+        self.attitude_plot.setBackground('w')
+        self.attitude_plot.setLabel('left', "Degrees")
+        self.attitude_plot.setLabel('bottom', "Time")
+        self.attitude_plot.showGrid(x=True, y=True, alpha=0.3)
+        self.roll_curve = self.attitude_plot.plot(pen=pg.mkPen(color='r', width=2), name="Roll")
+        self.pitch_curve = self.attitude_plot.plot(pen=pg.mkPen(color='g', width=2), name="Pitch")
+        self.heading_curve = self.attitude_plot.plot(pen=pg.mkPen(color='b', width=2), name="Heading")
+        self.attitude_plot.addLegend()
+        attitude_layout.addWidget(self.attitude_plot)
+        
+        # Add graphs to layout
+        graph_layout.addWidget(depth_graph)
+        graph_layout.addWidget(attitude_graph)
+        main_layout.addWidget(graph_group)
+        
+        # Setup graph update timer
+        self.graph_timer = QTimer(self)
+        self.graph_timer.timeout.connect(self.update_graphs)
+        self.graph_timer.start(500)  # Update graphs twice per second
 
     def process_data_batch(self, data_batch):
-        # Process the last relevant message from each list in the batch
+        current_time = time.time()
+        # Process only the last relevant message from each list in the batch
         for uart_id, data_list in data_batch.items():
             if data_list:
-                self.process_data(uart_id, data_list[-1]) # Process only the most recent data for the dashboard
+                self.process_data(uart_id, data_list[-1])
+        
+        # Update status
+        time_since_last = current_time - self.last_update
+        if time_since_last > 5:  # 5 seconds without data
+            self.status_label.setText("No data received recently")
+            self.status_label.setStyleSheet("font-weight: bold; color: #e74c3c;")
+        elif time_since_last > 2:  # 2 seconds without data
+            self.status_label.setText("Data connection slow")
+            self.status_label.setStyleSheet("font-weight: bold; color: #f39c12;")
+        else:
+            self.status_label.setText("Receiving data")
+            self.status_label.setStyleSheet("font-weight: bold; color: #2ecc71;")
+            
+        self.last_update = current_time
 
     def process_data(self, uart_id, data):
         try:
-            nmea_data = data # Already stripped of MCU timestamp
-            if uart_id == "UART1" and nmea_data.startswith('$GPGGA'):
-                parts = nmea_data.split(',')
+            # Debug output to diagnose issues
+            # print(f"Processing {uart_id}: {data}")
+            
+            if uart_id == "UART1" and data.startswith('$GPGGA'):
+                parts = data.split(',')
                 if len(parts) > 9 and parts[1] and parts[2] and parts[4]:
-                    time_str = parts[1].split('.')[0]
-                    time_formatted = f"{time_str[:2]}:{time_str[2:4]}:{time_str[4:6]}"
-                    self.param_labels["GPS Time"].setText(time_formatted)
-                    lat, lat_dir, lon, lon_dir = float(parts[2]), parts[3], float(parts[4]), parts[5]
-                    latitude = (lat // 100) + (lat % 100) / 60
-                    if lat_dir == 'S': latitude = -latitude
-                    longitude = (lon // 100) + (lon % 100) / 60
-                    if lon_dir == 'W': longitude = -longitude
+                    # Parse time (HHMMSS.SS format)
+                    time_str = parts[1]
+                    if '.' in time_str:
+                        time_str = time_str.split('.')[0]  # Remove fractional seconds
+                    
+                    # Format time as HH:MM:SS
+                    try:
+                        hours = time_str[0:2]
+                        minutes = time_str[2:4]
+                        seconds = time_str[4:6]
+                        time_formatted = f"{hours}:{minutes}:{seconds}"
+                        self.param_labels["GPS Time"].setText(time_formatted)
+                    except:
+                        pass
+                    
+                    # Parse latitude
+                    lat_str = parts[2]
+                    lat_dir = parts[3]
+                    try:
+                        lat_deg = float(lat_str[0:2])
+                        lat_min = float(lat_str[2:])
+                        latitude = lat_deg + (lat_min / 60)
+                        if lat_dir == 'S':
+                            latitude = -latitude
+                    except ValueError:
+                        latitude = 0.0
+                    
+                    # Parse longitude
+                    lon_str = parts[4]
+                    lon_dir = parts[5]
+                    try:
+                        lon_deg = float(lon_str[0:3])
+                        lon_min = float(lon_str[3:])
+                        longitude = lon_deg + (lon_min / 60)
+                        if lon_dir == 'W':
+                            longitude = -longitude
+                    except ValueError:
+                        longitude = 0.0
+                    
+                    # Update position display
                     self.param_labels["Position"].setText(f"{latitude:.6f}, {longitude:.6f}")
-            elif uart_id == "UART2" and nmea_data.startswith('$MYINS'):
-                parts = nmea_data.split(',')
+            
+            elif uart_id == "UART2" and data.startswith('$MYINS'):
+                parts = data.split(',')
                 if len(parts) >= 4:
-                    roll = parts[1].split('*')[0]
-                    pitch = parts[2].split('*')[0]
-                    heading = parts[3].split('*')[0]
+                    # Extract values and remove any checksum (*XX)
+                    roll = parts[1].split('*')[0].strip()
+                    pitch = parts[2].split('*')[0].strip()
+                    heading = parts[3].split('*')[0].strip()
+                    
+                    # Update attitude display
                     self.param_labels["Attitude"].setText(f"R: {roll}°  P: {pitch}°  H: {heading}°")
-            elif uart_id == "UART3" and nmea_data.startswith('$SDDBT'):
-                parts = nmea_data.split(',')
+                    
+                    # Store values for graphing
+                    try:
+                        self.roll_data.append(float(roll))
+                        self.pitch_data.append(float(pitch))
+                        self.heading_data.append(float(heading))
+                        self.timestamps.append(time.time())
+                    except ValueError:
+                        pass
+            
+            elif uart_id == "UART3" and data.startswith('$SDDBT'):
+                parts = data.split(',')
                 if len(parts) >= 4:
-                    depth = parts[3].split('*')[0]
+                    # Extract depth value and remove any checksum (*XX)
+                    depth = parts[3].split('*')[0].strip()
                     self.param_labels["Depth"].setText(f"{depth} m")
+                    
+                    # Store depth for graphing
+                    try:
+                        self.depth_data.append(float(depth))
+                    except ValueError:
+                        pass
+        
         except (ValueError, IndexError, TypeError) as e:
             print(f"Error processing dashboard data: {e}\nRaw data: {data}")
 
+    def update_graphs(self):
+        """Update the depth and attitude graphs"""
+        # Update depth graph
+        if self.depth_data:
+            self.depth_curve.setData(list(self.depth_data))
+        
+        # Update attitude graph
+        if self.roll_data and self.pitch_data and self.heading_data and self.timestamps:
+            # Convert timestamps to relative seconds
+            if self.timestamps:
+                base_time = self.timestamps[0]
+                rel_times = [t - base_time for t in self.timestamps]
+                
+                self.roll_curve.setData(rel_times, list(self.roll_data))
+                self.pitch_curve.setData(rel_times, list(self.pitch_data))
+                self.heading_curve.setData(rel_times, list(self.heading_data))
+
 class TimeSyncPage(QWidget):
-    # This class also remains the same, but will be more responsive.
     def __init__(self, serial_thread):
         super().__init__()
         self.serial_thread = serial_thread
@@ -581,11 +723,11 @@ class TimeSyncPage(QWidget):
         control_group = QGroupBox("Time Sync Control")
         control_layout = QHBoxLayout(control_group)
         self.gettime_btn = QPushButton("Start Stream")
-        self.gettime_btn.clicked.connect(lambda: self.serial_thread.send_command("GETTIME\n"))
+        self.gettime_btn.clicked.connect(lambda: self.serial_thread.send_command("GETTIME\r\n"))
         control_layout.addWidget(self.gettime_btn)
         self.stop_btn = QPushButton("Stop Stream")
         self.stop_btn.setStyleSheet(f"background-color: {AppColors.WARNING}; border-color: {AppColors.WARNING};")
-        self.stop_btn.clicked.connect(lambda: self.serial_thread.send_command("STOP_GETTIME\n"))
+        self.stop_btn.clicked.connect(lambda: self.serial_thread.send_command("STOP_GETTIME\r\n"))
         control_layout.addWidget(self.stop_btn)
         control_layout.addStretch()
         self.sync_status_label = QLabel("Status: Awaiting Data")
@@ -635,6 +777,9 @@ class TimeSyncPage(QWidget):
 
     def process_time_sync(self, data):
         try:
+            # Debug output to diagnose issues
+            print(f"Raw time sync data: {data}")
+            
             parts = data.split()
             if len(parts) >= 6:
                 value = int(parts[1])
@@ -696,11 +841,27 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.time_sync_page, "Sync Info")
         
         self.setCentralWidget(self.tabs)
+        
+        # Connect tab change signal
+        self.tabs.currentChanged.connect(self.on_tab_changed)
+
+    def on_tab_changed(self, index):
+        """Optimize resource usage based on active tab"""
+        if index == 0:  # Logging tab
+            # Enable logging, disable monitoring parsing
+            pass
+        elif index == 1:  # Monitoring tab
+            # Disable logging to free resources for parsing
+            if self.main_page.logging_active:
+                self.main_page.toggle_logging()
+        elif index == 2:  # Time Sync tab
+            # No special handling needed
+            pass
 
     def closeEvent(self, event):
         print("Closing application. Cleaning up resources...")
         if self.serial_thread.isRunning():
-            self.serial_thread.disconnect() # This now handles stopping logging and waiting for the thread
+            self.serial_thread.disconnect()
         event.accept()
 
 if __name__ == "__main__":
