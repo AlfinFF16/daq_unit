@@ -21,7 +21,8 @@ from collections import deque
 # =============================================================================
 class AppColors:
     BACKGROUND = "#1e1f22"
-    PRIMARY = "#3a7eff"
+    HEADER_BACKGROUND = "#101113"
+    PRIMARY = "#0078D7"  # A slightly different blue
     SECONDARY = "#2ecc71"
     TEXT_PRIMARY = "#e0e0e0"
     TEXT_SECONDARY = "#a0a0a0"
@@ -30,14 +31,17 @@ class AppColors:
     DANGER = "#e74c3c"
     WARNING = "#f39c12"
 
-# It's recommended to have the Inter font installed on your system.
-# You can download it from Google Fonts.
+# Using Bahnscrift as the preferred font
 APP_STYLESHEET = f"""
     QWidget {{
         color: {AppColors.TEXT_PRIMARY};
-        font-family: Inter, Segoe UI, sans-serif;
+        font-family: Bahnscrift, "Segoe UI", sans-serif;
     }}
-    QMainWindow, QTabWidget::pane {{
+    QMainWindow {{
+        background-color: {AppColors.BACKGROUND};
+    }}
+    QTabWidget::pane {{
+        border: none;
         background-color: {AppColors.BACKGROUND};
     }}
     QGroupBox {{
@@ -46,6 +50,7 @@ APP_STYLESHEET = f"""
         border-radius: 8px;
         margin-top: 1ex;
         font-weight: bold;
+        font-size: 11pt;
     }}
     QGroupBox::title {{
         subcontrol-origin: margin;
@@ -61,10 +66,11 @@ APP_STYLESHEET = f"""
         font-weight: bold;
     }}
     QPushButton:hover {{
-        background-color: #4a8eff;
+        background-color: #1088E7;
     }}
     QPushButton:disabled {{
         background-color: #555;
+        color: #999;
     }}
     QComboBox {{
         background-color: #2c2d30;
@@ -80,16 +86,18 @@ APP_STYLESHEET = f"""
         border: 1px solid {AppColors.BORDER};
         border-radius: 4px;
         font-family: 'Consolas', 'Courier New', monospace;
+        font-size: 10pt;
     }}
     QTabWidget::tab-bar {{
         alignment: center;
     }}
     QTabBar::tab {{
         background: #28292c;
-        padding: 10px 20px;
+        padding: 10px 25px;
         border-top-left-radius: 6px;
         border-top-right-radius: 6px;
         font-weight: bold;
+        font-size: 11pt;
     }}
     QTabBar::tab:selected {{
         background: {AppColors.PRIMARY};
@@ -185,6 +193,8 @@ class SerialThread(QThread):
             if not line:
                 continue
 
+            # This logic assumes the original device sends a timestamp like [15:20:43.261902]$GPGGA...
+            # We will now create our own timestamp for display purposes in the UI.
             data_content = line[line.find('$'):] if '$' in line else line
 
             if "$GPGGA" in data_content: uart_id = "UART1"
@@ -219,17 +229,19 @@ class SerialThread(QThread):
 #  --- MAIN LOGGING PAGE ---
 # =============================================================================
 class MainPage(QWidget):
-    DISPLAY_LINE_COUNT = 10
+    DISPLAY_LINE_COUNT = 10 # Explicitly set to 10 lines
 
     def __init__(self, serial_thread):
         super().__init__()
         self.serial_thread = serial_thread
         self.logging_active = False
-        self.data_buffers = {f"UART{i}": deque(maxlen=self.DISPLAY_LINE_COUNT) for i in range(1, 5)}
+        self.data_buffers = {
+            f"UART{i}": deque(maxlen=self.DISPLAY_LINE_COUNT) for i in range(1, 5)
+        }
         self.init_ui()
         self.update_timer = QTimer(self)
         self.update_timer.timeout.connect(self.update_displays)
-        self.update_timer.start(100)
+        self.update_timer.start(100) # Fast update for smooth display
 
     def init_ui(self):
         main_layout = QVBoxLayout(self)
@@ -267,7 +279,7 @@ class MainPage(QWidget):
         control_grid.addWidget(log_group, 0, 1)
         main_layout.addLayout(control_grid)
 
-        uart_group = QGroupBox("Live UART Data Streams")
+        uart_group = QGroupBox("Live UART Data Streams (Last 10 lines)")
         uart_layout = QGridLayout()
         self.uart_displays = {}
         for i in range(1, 5):
@@ -320,7 +332,7 @@ class MainPage(QWidget):
     def update_log_status_style(self, active):
         self.log_status.setText("ACTIVE" if active else "INACTIVE")
         color = AppColors.SUCCESS if active else AppColors.DANGER
-        self.log_status.setStyleSheet(f"color: {color}; font-weight: bold;")
+        self.log_status.setStyleSheet(f"color: {color}; font-weight: bold; font-size:10pt;")
 
     def update_log_button_style(self, active):
         self.log_btn.setText("Stop Logging" if active else "Start Logging")
@@ -339,19 +351,29 @@ class MainPage(QWidget):
             self.serial_thread.stop_logging()
 
     def handle_serial_data_batch(self, data_batch):
+        # Add timestamp here for display purposes
+        timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
         for uart_id, data_list in data_batch.items():
             if uart_id in self.data_buffers:
-                self.data_buffers[uart_id].extend(data_list)
+                for data_item in data_list:
+                    # Format the string with the timestamp
+                    formatted_line = f"[{timestamp}] {data_item}"
+                    self.data_buffers[uart_id].append(formatted_line)
 
     def update_displays(self):
         for uart_id, display in self.uart_displays.items():
             buffer = self.data_buffers[uart_id]
             if buffer:
+                # The deque automatically handles the 10-line limit
                 display.setPlainText("\n".join(buffer))
+                # Auto-scroll to the bottom
+                display.verticalScrollBar().setValue(display.verticalScrollBar().maximum())
 
 # =============================================================================
 #  --- MONITORING PAGE ---
 # =============================================================================
+# This class remains the same as the previous version, as the requested changes
+# were for the Logging page and overall styling.
 class MonitoringPage(QWidget):
     data_updated = pyqtSignal(dict)
 
@@ -377,7 +399,7 @@ class MonitoringPage(QWidget):
         layout = QVBoxLayout(group)
         layout.setAlignment(Qt.AlignCenter)
         value_label = QLabel("---")
-        value_label.setFont(QFont("Inter", 20, QFont.Bold))
+        value_label.setFont(QFont("Bahnscrift", 20, QFont.Bold))
         value_label.setAlignment(Qt.AlignCenter)
         subtitle_label = QLabel(subtitle)
         subtitle_label.setAlignment(Qt.AlignCenter)
@@ -456,7 +478,7 @@ class MonitoringPage(QWidget):
         for uart_id, data_list in data_batch.items():
             if data_list:
                 self.process_data(uart_id, data_list[-1])
-        
+
         time_since_last = time.time() - self.last_update
         if time_since_last > 5:
             self.status_label.setText("No data received")
@@ -467,7 +489,7 @@ class MonitoringPage(QWidget):
         else:
             self.status_label.setText("Receiving data")
             self.status_label.setStyleSheet(f"color: {AppColors.SUCCESS}; font-size: 16px; font-weight: bold;")
-            
+
         self.data_updated.emit(self.data)
 
     def process_data(self, uart_id, data):
@@ -508,13 +530,14 @@ class MonitoringPage(QWidget):
         self.param_labels["Position"].setText(f"{data['lat']:.6f}, {data['lon']:.6f}")
         self.param_labels["Depth"].setText(f"{data['depth']:.2f} m")
         self.param_labels["Attitude"].setText(f"R:{data['roll']:.2f}° P:{data['pitch']:.2f}° H:{data['heading']:.2f}°")
-        
+
         self.depth_curve.setData(list(self.history['depth']))
         if self.history['time']:
             time_x = [t - self.history['time'][0] for t in self.history['time']]
             self.roll_curve.setData(time_x, list(self.history['roll']))
             self.pitch_curve.setData(time_x, list(self.history['pitch']))
             self.heading_curve.setData(time_x, list(self.history['heading']))
+
 
 # =============================================================================
 #  --- MAIN WINDOW ---
@@ -526,13 +549,34 @@ class MainWindow(QMainWindow):
         self.setWindowIcon(QIcon(self.style().standardIcon(QStyle.SP_ComputerIcon)))
         self.setGeometry(50, 50, 1440, 900)
         self.serial_thread = SerialThread()
-        
+
+        # Main container widget
+        central_widget = QWidget()
+        main_layout = QVBoxLayout(central_widget)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        # Create a new, more prominent header
+        header = QWidget()
+        header.setStyleSheet(f"background-color: {AppColors.HEADER_BACKGROUND}; border-bottom: 2px solid {AppColors.PRIMARY};")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(15, 10, 15, 10)
+        title_label = QLabel("Hydrographic DAQ & Monitoring System")
+        title_label.setStyleSheet("font-size: 16pt; font-weight: bold;")
+        header_layout.addWidget(title_label)
+        header_layout.addStretch()
+
+        main_layout.addWidget(header)
+
+        # Tab widget
         self.tabs = QTabWidget()
         self.main_page = MainPage(self.serial_thread)
         self.monitoring_page = MonitoringPage(self.serial_thread)
         self.tabs.addTab(self.main_page, "Logging")
         self.tabs.addTab(self.monitoring_page, "Monitoring")
-        self.setCentralWidget(self.tabs)
+
+        main_layout.addWidget(self.tabs)
+        self.setCentralWidget(central_widget)
 
     def closeEvent(self, event):
         self.serial_thread.disconnect()
@@ -540,7 +584,9 @@ class MainWindow(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    QFontDatabase.addApplicationFont("Inter-Regular.ttf") # Make sure you have this font file
+    # Add Bahnscrift font if available, otherwise it will use fallbacks
+    # Make sure you have the font installed on your system for it to work.
+    QFontDatabase.addApplicationFont("BAHNSCHRIFT.TTF")
     app.setStyleSheet(APP_STYLESHEET)
     window = MainWindow()
     window.show()
