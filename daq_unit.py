@@ -92,6 +92,10 @@ APP_STYLESHEET = f"""
         alignment: center;
     }}
     QTabBar::tab {{
+        min-width: 120px;   /* Minimum tab width */
+        max-width: 200px;   /* Maximum tab width */
+        padding: 10px 20px; /* Vertical and horizontal padding */
+        margin: 0 2px;      /* Small horizontal margin between tabs */
         background: #28292c;
         padding: 10px 25px;
         border-top-left-radius: 6px;
@@ -114,6 +118,43 @@ APP_STYLESHEET = f"""
         border: 1px solid {AppColors.BORDER};
         font-weight: bold;
     }}
+"""
+
+APP_STYLESHEET += """
+    /* Consistent spacing for all widgets */
+    QWidget {
+        spacing: 8px;
+    }
+    
+    /* Spacing for labels */
+    QLabel {
+        margin: 5px;
+    }
+    
+    /* Spacing for buttons */
+    QPushButton {
+        margin: 5px;
+        padding: 8px 15px;
+    }
+    
+    /* Spacing for combo boxes */
+    QComboBox {
+        margin: 5px;
+        padding: 6px;
+    }
+    
+    /* Spacing for text displays */
+    QPlainTextEdit {
+        padding: 8px;
+    }
+    
+    /* Spacing between table cells */
+    QTableWidget {
+        gridline-color: #444;
+    }
+    QTableWidget::item {
+        padding: 6px;
+    }
 """
 
 # =============================================================================
@@ -193,35 +234,41 @@ class SerialThread(QThread):
             if not line:
                 continue
 
-            # This logic assumes the original device sends a timestamp like [15:20:43.261902]$GPGGA...
-            # We will now create our own timestamp for display purposes in the UI.
-            data_content = line[line.find('$'):] if '$' in line else line
+            # Extract device timestamp if present
+            if line.startswith('[') and ']' in line:
+                timestamp_end = line.find(']')
+                device_timestamp = line[1:timestamp_end]
+                data_content = line[timestamp_end+1:].strip()
+            else:
+                device_timestamp = ""
+                data_content = line
 
             if "$GPGGA" in data_content: uart_id = "UART1"
             elif "$MYINS" in data_content: uart_id = "UART2"
             elif "$SDDBT" in data_content: uart_id = "UART3"
             else: continue
 
-            data_batch[uart_id].append(data_content)
+            # Store both timestamp and content
+            data_batch[uart_id].append((device_timestamp, data_content))
+            
             if self.logging_active:
-                self.log_data(uart_id, data_content)
+                self.log_data(uart_id, device_timestamp, data_content)
 
         non_empty_batch = {k: v for k, v in data_batch.items() if v}
         if non_empty_batch:
             self.data_received_batch.emit(non_empty_batch)
 
-    def log_data(self, uart_id, data_content):
+    def log_data(self, uart_id, device_timestamp, data_content):
         try:
             if uart_id not in self.log_files:
                 filename = os.path.join(self.log_folder, f"{uart_id.lower()}.csv")
                 self.log_files[uart_id] = open(filename, 'a', newline='', encoding='utf-8')
                 writer = csv.writer(self.log_files[uart_id])
-                if os.path.getsize(filename) == 0:
-                    writer.writerow(["PC Timestamp", "Raw Data"])
+                # Header with DEVICE timestamp
+                writer.writerow(["Device Timestamp", "Raw Data"])
 
-            pc_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
             writer = csv.writer(self.log_files[uart_id])
-            writer.writerow([pc_timestamp, data_content])
+            writer.writerow([device_timestamp, data_content])
         except (IOError, csv.Error) as e:
             print(f"Error writing to log for {uart_id}: {e}")
 
@@ -297,6 +344,14 @@ class MainPage(QWidget):
         uart_group.setLayout(uart_layout)
         main_layout.addWidget(uart_group, 1)
 
+                # Add spacing around group boxes
+        com_group.setContentsMargins(10, 15, 10, 10)  # Left, Top, Right, Bottom
+        log_group.setContentsMargins(10, 15, 10, 10)
+        uart_group.setContentsMargins(10, 15, 10, 10)
+
+        # Add spacing between UART displays
+        uart_layout.setSpacing(15)  # Space between UART panels
+
         self.serial_thread.data_received_batch.connect(self.handle_serial_data_batch)
         self.update_connect_button_style(connected=False)
 
@@ -351,13 +406,12 @@ class MainPage(QWidget):
             self.serial_thread.stop_logging()
 
     def handle_serial_data_batch(self, data_batch):
-        # Add timestamp here for display purposes
-        timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
         for uart_id, data_list in data_batch.items():
             if uart_id in self.data_buffers:
-                for data_item in data_list:
-                    # Format the string with the timestamp
-                    formatted_line = f"[{timestamp}] {data_item}"
+                for timestamp, data_item in data_list:
+                    # Use device timestamp if available
+                    display_timestamp = f"[{timestamp}] " if timestamp else ""
+                    formatted_line = f"{display_timestamp}{data_item}"
                     self.data_buffers[uart_id].append(formatted_line)
 
     def update_displays(self):
@@ -463,6 +517,15 @@ class MonitoringPage(QWidget):
         self.depth_plot.showGrid(x=True, y=True, alpha=0.3)
         self.depth_curve = self.depth_plot.plot(pen=pg.mkPen(color='#00AEEF', width=2))
         graph_layout.addWidget(self.depth_plot, 0, 0)
+
+        # Add spacing around group boxes
+        mapping_group.setContentsMargins(10, 15, 10, 10)
+        status_group.setContentsMargins(10, 15, 10, 10)
+        data_group.setContentsMargins(10, 15, 10, 10)
+        graph_group.setContentsMargins(10, 15, 10, 10)
+        
+        # Add spacing between parameter boxes
+        grid_layout.setSpacing(15)
 
         self.attitude_plot = pg.PlotWidget(title="Attitude History")
         self.attitude_plot.setLabel('left', "Degrees")
@@ -584,9 +647,8 @@ class MainWindow(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    # Add Bahnscrift font if available, otherwise it will use fallbacks
-    # Make sure you have the font installed on your system for it to work.
-    QFontDatabase.addApplicationFont("BAHNSCHRIFT.TTF")
+    # Simplified font setup
+    APP_STYLESHEET = APP_STYLESHEET.replace('Bahnscrift, "Segoe UI", sans-serif', '"Segoe UI", Arial, sans-serif')
     app.setStyleSheet(APP_STYLESHEET)
     window = MainWindow()
     window.show()
