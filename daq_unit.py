@@ -9,7 +9,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QComboBox, QPlainTextEdit, QGroupBox, QGridLayout,
     QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView,
-    QStyle
+    QStyle, QSizePolicy
 )
 from PyQt5.QtCore import QTimer, Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QFont, QIcon, QFontDatabase
@@ -22,7 +22,7 @@ from collections import deque
 class AppColors:
     BACKGROUND = "#1e1f22"
     HEADER_BACKGROUND = "#101113"
-    PRIMARY = "#0078D7"  # A slightly different blue
+    PRIMARY = "#0078D7"
     SECONDARY = "#2ecc71"
     TEXT_PRIMARY = "#e0e0e0"
     TEXT_SECONDARY = "#a0a0a0"
@@ -31,11 +31,12 @@ class AppColors:
     DANGER = "#e74c3c"
     WARNING = "#f39c12"
 
-# Using Bahnscrift as the preferred font
+# Updated stylesheet with tab styling and spacing improvements
 APP_STYLESHEET = f"""
     QWidget {{
         color: {AppColors.TEXT_PRIMARY};
-        font-family: Bahnscrift, "Segoe UI", sans-serif;
+        font-family: "Segoe UI", Arial, sans-serif;
+        spacing: 8px;
     }}
     QMainWindow {{
         background-color: {AppColors.BACKGROUND};
@@ -43,6 +44,8 @@ APP_STYLESHEET = f"""
     QTabWidget::pane {{
         border: none;
         background-color: {AppColors.BACKGROUND};
+        border-top: 2px solid {AppColors.PRIMARY};
+        margin-top: -1px;
     }}
     QGroupBox {{
         background-color: #28292c;
@@ -51,6 +54,7 @@ APP_STYLESHEET = f"""
         margin-top: 1ex;
         font-weight: bold;
         font-size: 11pt;
+        padding: 10px;
     }}
     QGroupBox::title {{
         subcontrol-origin: margin;
@@ -64,6 +68,7 @@ APP_STYLESHEET = f"""
         padding: 8px 16px;
         border-radius: 4px;
         font-weight: bold;
+        margin: 5px;
     }}
     QPushButton:hover {{
         background-color: #1088E7;
@@ -77,6 +82,7 @@ APP_STYLESHEET = f"""
         border: 1px solid {AppColors.BORDER};
         padding: 5px;
         border-radius: 4px;
+        margin: 5px;
     }}
     QComboBox::drop-down {{
         border: none;
@@ -87,25 +93,31 @@ APP_STYLESHEET = f"""
         border-radius: 4px;
         font-family: 'Consolas', 'Courier New', monospace;
         font-size: 10pt;
+        padding: 8px;
     }}
     QTabWidget::tab-bar {{
         alignment: center;
     }}
     QTabBar::tab {{
-        min-width: 120px;   /* Minimum tab width */
-        max-width: 200px;   /* Maximum tab width */
-        padding: 10px 20px; /* Vertical and horizontal padding */
-        margin: 0 2px;      /* Small horizontal margin between tabs */
         background: #28292c;
-        padding: 10px 25px;
+        min-width: 120px;
+        max-width: 200px;
+        height: 35px;
+        padding: 8px 20px;
+        margin: 0 2px;
         border-top-left-radius: 6px;
         border-top-right-radius: 6px;
         font-weight: bold;
         font-size: 11pt;
+        border: 1px solid {AppColors.BORDER};
     }}
     QTabBar::tab:selected {{
         background: {AppColors.PRIMARY};
         color: white;
+        border-bottom: 2px solid {AppColors.PRIMARY};
+    }}
+    QTabBar::tab:hover:!selected {{
+        background: #323336;
     }}
     QTableWidget {{
         background-color: #2c2d30;
@@ -118,43 +130,12 @@ APP_STYLESHEET = f"""
         border: 1px solid {AppColors.BORDER};
         font-weight: bold;
     }}
-"""
-
-APP_STYLESHEET += """
-    /* Consistent spacing for all widgets */
-    QWidget {
-        spacing: 8px;
-    }
-    
-    /* Spacing for labels */
-    QLabel {
+    QLabel {{
         margin: 5px;
-    }
-    
-    /* Spacing for buttons */
-    QPushButton {
-        margin: 5px;
-        padding: 8px 15px;
-    }
-    
-    /* Spacing for combo boxes */
-    QComboBox {
-        margin: 5px;
+    }}
+    QTableWidget::item {{
         padding: 6px;
-    }
-    
-    /* Spacing for text displays */
-    QPlainTextEdit {
-        padding: 8px;
-    }
-    
-    /* Spacing between table cells */
-    QTableWidget {
-        gridline-color: #444;
-    }
-    QTableWidget::item {
-        padding: 6px;
-    }
+    }}
 """
 
 # =============================================================================
@@ -234,19 +215,34 @@ class SerialThread(QThread):
             if not line:
                 continue
 
-            # Extract device timestamp if present
+            # Extract UART port and timestamp from DAQ format
+            uart_id = None
+            device_timestamp = ""
+            data_content = line
+            
+            # Parse DAQ format: [UARTx][HH:MM:SS.ffffff] $DATA
             if line.startswith('[') and ']' in line:
-                timestamp_end = line.find(']')
-                device_timestamp = line[1:timestamp_end]
-                data_content = line[timestamp_end+1:].strip()
-            else:
-                device_timestamp = ""
-                data_content = line
-
-            if "$GPGGA" in data_content: uart_id = "UART1"
-            elif "$MYINS" in data_content: uart_id = "UART2"
-            elif "$SDDBT" in data_content: uart_id = "UART3"
-            else: continue
+                parts = line.split(']', 2)
+                if len(parts) >= 3:
+                    # Extract UART ID from first part: [UART1
+                    uart_part = parts[0][1:]  # Remove leading '['
+                    if uart_part.startswith("UART"):
+                        uart_id = uart_part
+                    
+                    # Extract timestamp from second part: [17:09:21.256293
+                    time_part = parts[1][1:]  # Remove leading '['
+                    if ':' in time_part and '.' in time_part:
+                        device_timestamp = time_part
+                    
+                    # The rest is the actual data content
+                    data_content = parts[2].strip()
+            
+            # If UART ID wasn't parsed, determine from content
+            if uart_id is None:
+                if "$GPGGA" in data_content: uart_id = "UART1"
+                elif "$MYINS" in data_content: uart_id = "UART2"
+                elif "$SDDBT" in data_content: uart_id = "UART3"
+                else: continue
 
             # Store both timestamp and content
             data_batch[uart_id].append((device_timestamp, data_content))
@@ -276,7 +272,7 @@ class SerialThread(QThread):
 #  --- MAIN LOGGING PAGE ---
 # =============================================================================
 class MainPage(QWidget):
-    DISPLAY_LINE_COUNT = 10 # Explicitly set to 10 lines
+    DISPLAY_LINE_COUNT = 10
 
     def __init__(self, serial_thread):
         super().__init__()
@@ -288,12 +284,12 @@ class MainPage(QWidget):
         self.init_ui()
         self.update_timer = QTimer(self)
         self.update_timer.timeout.connect(self.update_displays)
-        self.update_timer.start(100) # Fast update for smooth display
+        self.update_timer.start(100)
 
     def init_ui(self):
         main_layout = QVBoxLayout(self)
         main_layout.setSpacing(15)
-        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setContentsMargins(15, 15, 15, 15)
 
         control_grid = QGridLayout()
         com_group = QGroupBox("Serial Connection")
@@ -309,6 +305,7 @@ class MainPage(QWidget):
         self.connect_btn.clicked.connect(self.toggle_connection)
         com_layout.addWidget(self.connect_btn)
         com_group.setLayout(com_layout)
+        com_group.setContentsMargins(10, 15, 10, 15)
 
         log_group = QGroupBox("Data Logging")
         log_layout = QHBoxLayout()
@@ -321,6 +318,7 @@ class MainPage(QWidget):
         self.log_btn.setEnabled(False)
         log_layout.addWidget(self.log_btn)
         log_group.setLayout(log_layout)
+        log_group.setContentsMargins(10, 15, 10, 15)
 
         control_grid.addWidget(com_group, 0, 0)
         control_grid.addWidget(log_group, 0, 1)
@@ -328,29 +326,30 @@ class MainPage(QWidget):
 
         uart_group = QGroupBox("Live UART Data Streams (Last 10 lines)")
         uart_layout = QGridLayout()
+        uart_layout.setSpacing(15)
         self.uart_displays = {}
         for i in range(1, 5):
-            text_edit = QPlainTextEdit()
-            text_edit.setReadOnly(True)
-            self.uart_displays[f"UART{i}"] = text_edit
             container = QWidget()
             vbox = QVBoxLayout(container)
-            vbox.setContentsMargins(0,0,0,0); vbox.setSpacing(5)
+            vbox.setContentsMargins(0, 0, 0, 0)
+            vbox.setSpacing(8)
+            
             label = QLabel(f"UART {i}")
-            label.setStyleSheet("font-weight: bold;")
+            label.setStyleSheet("font-weight: bold; margin-bottom: 5px;")
+            
+            text_edit = QPlainTextEdit()
+            text_edit.setReadOnly(True)
+            text_edit.setMinimumHeight(150)
+            
             vbox.addWidget(label)
             vbox.addWidget(text_edit)
+            
+            self.uart_displays[f"UART{i}"] = text_edit
             uart_layout.addWidget(container, (i - 1) // 2, (i - 1) % 2)
+        
         uart_group.setLayout(uart_layout)
+        uart_group.setContentsMargins(15, 20, 15, 15)
         main_layout.addWidget(uart_group, 1)
-
-                # Add spacing around group boxes
-        com_group.setContentsMargins(10, 15, 10, 10)  # Left, Top, Right, Bottom
-        log_group.setContentsMargins(10, 15, 10, 10)
-        uart_group.setContentsMargins(10, 15, 10, 10)
-
-        # Add spacing between UART displays
-        uart_layout.setSpacing(15)  # Space between UART panels
 
         self.serial_thread.data_received_batch.connect(self.handle_serial_data_batch)
         self.update_connect_button_style(connected=False)
@@ -410,24 +409,22 @@ class MainPage(QWidget):
             if uart_id in self.data_buffers:
                 for timestamp, data_item in data_list:
                     # Use device timestamp if available
-                    display_timestamp = f"[{timestamp}] " if timestamp else ""
-                    formatted_line = f"{display_timestamp}{data_item}"
+                    if timestamp:
+                        formatted_line = f"[{timestamp}] {data_item}"
+                    else:
+                        formatted_line = data_item
                     self.data_buffers[uart_id].append(formatted_line)
 
     def update_displays(self):
         for uart_id, display in self.uart_displays.items():
             buffer = self.data_buffers[uart_id]
             if buffer:
-                # The deque automatically handles the 10-line limit
                 display.setPlainText("\n".join(buffer))
-                # Auto-scroll to the bottom
                 display.verticalScrollBar().setValue(display.verticalScrollBar().maximum())
 
 # =============================================================================
 #  --- MONITORING PAGE ---
 # =============================================================================
-# This class remains the same as the previous version, as the requested changes
-# were for the Logging page and overall styling.
 class MonitoringPage(QWidget):
     data_updated = pyqtSignal(dict)
 
@@ -452,12 +449,18 @@ class MonitoringPage(QWidget):
         group = QGroupBox(title)
         layout = QVBoxLayout(group)
         layout.setAlignment(Qt.AlignCenter)
+        layout.setSpacing(8)
+        layout.setContentsMargins(10, 15, 10, 15)
+        
         value_label = QLabel("---")
-        value_label.setFont(QFont("Bahnscrift", 20, QFont.Bold))
+        value_label.setFont(QFont("Segoe UI", 20, QFont.Bold))
         value_label.setAlignment(Qt.AlignCenter)
+        value_label.setStyleSheet("margin-bottom: 5px;")
+        
         subtitle_label = QLabel(subtitle)
         subtitle_label.setAlignment(Qt.AlignCenter)
         subtitle_label.setStyleSheet(f"color: {AppColors.TEXT_SECONDARY};")
+        
         layout.addWidget(value_label)
         layout.addWidget(subtitle_label)
         return group, value_label
@@ -465,15 +468,19 @@ class MonitoringPage(QWidget):
     def init_ui(self):
         main_layout = QVBoxLayout(self)
         main_layout.setSpacing(15)
+        main_layout.setContentsMargins(15, 15, 15, 15)
 
         top_layout = QHBoxLayout()
         mapping_group = QGroupBox("Instrument Port Mapping")
         mapping_layout = QVBoxLayout(mapping_group)
+        mapping_layout.setContentsMargins(10, 15, 10, 15)
+        
         self.table = QTableWidget(4, 2)
         self.table.setHorizontalHeaderLabels(["Port", "Assigned Instrument"])
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table.setMinimumHeight(180)
         instruments = [
             ("UART1", "GPS Position (GPGGA)"), ("UART2", "INS (Roll/Pitch/Heading)"),
             ("UART3", "Depth Sensor (SDDBT)"), ("UART4", "Reserved")
@@ -482,19 +489,24 @@ class MonitoringPage(QWidget):
             self.table.setItem(row, 0, QTableWidgetItem(port))
             self.table.setItem(row, 1, QTableWidgetItem(desc))
         mapping_layout.addWidget(self.table)
-        top_layout.addWidget(mapping_group)
+        top_layout.addWidget(mapping_group, 1)
 
         status_group = QGroupBox("Status")
         status_layout = QVBoxLayout(status_group)
+        status_layout.setContentsMargins(10, 15, 10, 15)
+        
         self.status_label = QLabel("Awaiting data...")
         self.status_label.setAlignment(Qt.AlignCenter)
         self.status_label.setStyleSheet("font-size: 16px; font-weight: bold;")
         status_layout.addWidget(self.status_label)
-        top_layout.addWidget(status_group)
+        top_layout.addWidget(status_group, 1)
         main_layout.addLayout(top_layout)
 
         data_group = QGroupBox("Live Sensor Measurements")
         grid_layout = QGridLayout(data_group)
+        grid_layout.setSpacing(15)
+        grid_layout.setContentsMargins(10, 15, 10, 15)
+        
         param_defs = [
             ("GPS Time", "UTC"), ("Position", "Latitude, Longitude"),
             ("Attitude", "Roll, Pitch, Heading (°)"), ("Depth", "Below Transducer (m)")
@@ -508,6 +520,8 @@ class MonitoringPage(QWidget):
 
         graph_group = QGroupBox("Sensor History")
         graph_layout = QGridLayout(graph_group)
+        graph_layout.setContentsMargins(10, 15, 10, 15)
+        graph_layout.setSpacing(15)
 
         pg.setConfigOption('background', AppColors.BACKGROUND)
         pg.setConfigOption('foreground', AppColors.TEXT_PRIMARY)
@@ -517,15 +531,6 @@ class MonitoringPage(QWidget):
         self.depth_plot.showGrid(x=True, y=True, alpha=0.3)
         self.depth_curve = self.depth_plot.plot(pen=pg.mkPen(color='#00AEEF', width=2))
         graph_layout.addWidget(self.depth_plot, 0, 0)
-
-        # Add spacing around group boxes
-        mapping_group.setContentsMargins(10, 15, 10, 10)
-        status_group.setContentsMargins(10, 15, 10, 10)
-        data_group.setContentsMargins(10, 15, 10, 10)
-        graph_group.setContentsMargins(10, 15, 10, 10)
-        
-        # Add spacing between parameter boxes
-        grid_layout.setSpacing(15)
 
         self.attitude_plot = pg.PlotWidget(title="Attitude History")
         self.attitude_plot.setLabel('left', "Degrees")
@@ -540,7 +545,9 @@ class MonitoringPage(QWidget):
     def process_data_batch(self, data_batch):
         for uart_id, data_list in data_batch.items():
             if data_list:
-                self.process_data(uart_id, data_list[-1])
+                # Process only the last item in the batch
+                _, last_data = data_list[-1]
+                self.process_data(uart_id, last_data)
 
         time_since_last = time.time() - self.last_update
         if time_since_last > 5:
@@ -619,11 +626,11 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # Create a new, more prominent header
+        # Header
         header = QWidget()
         header.setStyleSheet(f"background-color: {AppColors.HEADER_BACKGROUND}; border-bottom: 2px solid {AppColors.PRIMARY};")
         header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(15, 10, 15, 10)
+        header_layout.setContentsMargins(20, 12, 20, 12)
         title_label = QLabel("Hydrographic DAQ & Monitoring System")
         title_label.setStyleSheet("font-size: 16pt; font-weight: bold;")
         header_layout.addWidget(title_label)
@@ -633,10 +640,12 @@ class MainWindow(QMainWindow):
 
         # Tab widget
         self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
         self.main_page = MainPage(self.serial_thread)
         self.monitoring_page = MonitoringPage(self.serial_thread)
         self.tabs.addTab(self.main_page, "Logging")
         self.tabs.addTab(self.monitoring_page, "Monitoring")
+        self.tabs.setStyleSheet("QTabWidget::pane { border: none; }")
 
         main_layout.addWidget(self.tabs)
         self.setCentralWidget(central_widget)
@@ -647,8 +656,6 @@ class MainWindow(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    # Simplified font setup
-    APP_STYLESHEET = APP_STYLESHEET.replace('Bahnscrift, "Segoe UI", sans-serif', '"Segoe UI", Arial, sans-serif')
     app.setStyleSheet(APP_STYLESHEET)
     window = MainWindow()
     window.show()
