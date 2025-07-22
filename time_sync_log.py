@@ -179,10 +179,14 @@ class SerialThread(QThread):
     def start_logging(self, log_folder):
         self.log_folder = log_folder
         self.logging_active = True
+        self.timesync_file = None
         print(f"Logging started in thread. Folder: {self.log_folder}")
 
     def stop_logging(self):
         self.logging_active = False
+        if self.timesync_file:
+            self.timesync_file.close()
+            self.timesync_file = None
         for f in self.log_files.values():
             f.close()
         self.log_files.clear()
@@ -227,6 +231,21 @@ class SerialThread(QThread):
             # --- Handle different data types ---
             if line.startswith('[IC]'):
                 self.time_sync_data.emit(line)
+                # Log time sync data if logging is active
+                if self.logging_active:
+                    try:
+                        if not self.timesync_file:
+                            filename = os.path.join(self.log_folder, "timesync.csv")
+                            self.timesync_file = open(filename, 'w', newline='', encoding='utf-8')
+                            writer = csv.writer(self.timesync_file)
+                            writer.writerow(["PC Timestamp", "Raw Data"])
+                        
+                        pc_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+                        writer = csv.writer(self.timesync_file)
+                        writer.writerow([pc_timestamp, line])
+                        self.timesync_file.flush()  # Ensure data is written immediately
+                    except (IOError, csv.Error) as e:
+                        print(f"Error writing to timesync log: {e}")
             elif line.startswith('['):
                 end_bracket = line.find(']')
                 if end_bracket != -1:
@@ -461,6 +480,7 @@ class TimeSyncPage(QWidget):
         super().__init__()
         self.serial_thread = serial_thread
         self.time_data = []
+        self.logging_active = False
         self.max_data_points = 100
         self.init_ui()
         serial_thread.time_sync_data.connect(self.process_time_sync)
@@ -514,6 +534,29 @@ class TimeSyncPage(QWidget):
         clear_btn = QPushButton("Clear Plot")
         clear_btn.clicked.connect(self.clear_data)
         main_layout.addWidget(clear_btn, 2, 1, Qt.AlignRight)
+        # Add log button to control group
+        self.log_btn = QPushButton("Log to CSV")
+        self.log_btn.setCheckable(True)
+        self.log_btn.clicked.connect(self.toggle_logging)
+        control_layout.addWidget(self.log_btn)
+        
+        # Add log status indicator
+        self.log_status = QLabel("Logging: OFF")
+        self.log_status.setStyleSheet("color: red; font-weight: bold;")
+        control_layout.addWidget(self.log_status)
+    
+    def toggle_logging(self):
+        self.logging_active = not self.logging_active
+        if self.logging_active:
+            self.log_btn.setText("Stop Logging")
+            self.log_btn.setStyleSheet(f"background-color: {AppColors.DANGER};")
+            self.log_status.setText("Logging: ACTIVE")
+            self.log_status.setStyleSheet("color: green; font-weight: bold;")
+        else:
+            self.log_btn.setText("Log to CSV")
+            self.log_btn.setStyleSheet(f"background-color: {AppColors.PRIMARY};")
+            self.log_status.setText("Logging: OFF")
+            self.log_status.setStyleSheet("color: red; font-weight: bold;")
 
     def clear_data(self):
         self.time_data.clear()
@@ -541,6 +584,24 @@ class TimeSyncPage(QWidget):
                 self.sync_status_label.setStyleSheet(f"font-size: 11pt; font-weight: bold; color: {status_color};")
                 self.lock_label.setText(f"Lock: {status_text}")
                 self.lock_label.setStyleSheet(f"font-size: 10pt; font-weight: bold; color: {status_color};")
+            # Write to CSV if logging is active
+            if self.logging_active:
+                log_folder = self.serial_thread.log_folder
+                if log_folder and self.serial_thread.logging_active:
+                    try:
+                        filename = os.path.join(log_folder, "timesync_processed.csv")
+                        file_exists = os.path.isfile(filename)
+                        
+                        with open(filename, 'a', newline='', encoding='utf-8') as f:
+                            writer = csv.writer(f)
+                            if not file_exists:
+                                writer.writerow(["PC Timestamp", "Capture Value", "Lock Status"])
+                            
+                            pc_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+                            lock_status = "LOCKED" if is_locked else "UNLOCKED"
+                            writer.writerow([pc_timestamp, value, lock_status])
+                    except (IOError, csv.Error) as e:
+                        print(f"Error writing to processed timesync log: {e}")
         except (ValueError, IndexError) as e:
             print(f"Error parsing time sync data '{data}': {e}")
 
