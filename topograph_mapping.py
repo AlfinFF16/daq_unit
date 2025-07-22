@@ -34,8 +34,17 @@ def parse_gga_latlon(gga_str):
         return None, None
 
 def parse_depth(raw):
+    """Extract depth in meters from DBT message"""
     try:
-        return float(raw.split(",")[5])
+        # DBT format: $xxDBT,depth_feet,f,depth_meters,M,depth_fathoms,F
+        parts = raw.split(',')
+        # Find the 'M' field which indicates meters
+        if 'M' in parts:
+            idx = parts.index('M')
+            if idx > 0:
+                return float(parts[idx-1])
+        # Fallback to try field 3 (depth in meters)
+        return float(parts[3])
     except:
         return None
 
@@ -134,6 +143,12 @@ class HydrographicMapApp:
                                bg="#4CAF50", fg="white", font=("Arial", 10, "bold"))
         process_btn.grid(row=3, column=1, pady=10, sticky='ew')
         
+        # Depth estimation button
+        self.depth_stats_btn = tk.Button(file_frame, text="Estimate Depth Stats", 
+                                        command=self.show_depth_stats, state=tk.DISABLED,
+                                        bg="#2196F3", fg="white")
+        self.depth_stats_btn.grid(row=3, column=2, padx=5, pady=10, sticky='ew')
+        
         # Configure grid weights
         file_frame.columnconfigure(1, weight=1)
         
@@ -221,11 +236,16 @@ class HydrographicMapApp:
             messagebox.showwarning("Input Error", "Please select all three data files")
             return
         
+        # Show processing status
+        self.stats_var.set("Processing data...")
+        self.root.update()
+        
         self.df = load_and_merge(gps_file, ins_file, depth_file)
         
         if self.df is not None:
             self.update_plot()
             self.update_stats()
+            self.depth_stats_btn.config(state=tk.NORMAL)  # Enable depth stats button
     
     def update_plot(self, event=None):
         if self.df is None:
@@ -278,6 +298,66 @@ class HydrographicMapApp:
         stats_text = (f"Points: {points_count:,} | "
                      f"Depth: Min={min_depth:.2f}m, Max={max_depth:.2f}m, Avg={avg_depth:.2f}m")
         self.stats_var.set(stats_text)
+    
+    def show_depth_stats(self):
+        """Display detailed depth statistics in a messagebox"""
+        if self.df is None:
+            messagebox.showwarning("Depth Stats", "No data available")
+            return
+            
+        # Calculate depth statistics
+        depth_data = self.df['depth_m']
+        min_depth = depth_data.min()
+        max_depth = depth_data.max()
+        avg_depth = depth_data.mean()
+        std_depth = depth_data.std()
+        median_depth = depth_data.median()
+        
+        # Create histogram for depth distribution
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.hist(depth_data, bins=50, color='#2196F3', edgecolor='white')
+        ax.set_title('Depth Distribution')
+        ax.set_xlabel('Depth (m)')
+        ax.set_ylabel('Frequency')
+        ax.grid(True, linestyle='--', alpha=0.7)
+        
+        # Save the histogram to a temporary file
+        temp_file = "depth_histogram.png"
+        fig.savefig(temp_file, dpi=100, bbox_inches='tight')
+        plt.close(fig)
+        
+        # Create stats message
+        stats_message = (
+            f"Depth Statistics:\n\n"
+            f"Min Depth: {min_depth:.2f} m\n"
+            f"Max Depth: {max_depth:.2f} m\n"
+            f"Average Depth: {avg_depth:.2f} m\n"
+            f"Median Depth: {median_depth:.2f} m\n"
+            f"Standard Deviation: {std_depth:.2f} m\n\n"
+            f"Depth distribution shown in histogram."
+        )
+        
+        # Create custom dialog to show stats and histogram
+        stats_dialog = tk.Toplevel(self.root)
+        stats_dialog.title("Depth Statistics")
+        stats_dialog.geometry("600x500")
+        
+        # Stats text
+        text_frame = tk.Frame(stats_dialog)
+        text_frame.pack(padx=10, pady=10, fill=tk.X)
+        tk.Label(text_frame, text=stats_message, justify=tk.LEFT).pack(anchor=tk.W)
+        
+        # Histogram image
+        img = tk.PhotoImage(file=temp_file)
+        img_label = tk.Label(stats_dialog, image=img)
+        img_label.image = img  # Keep reference
+        img_label.pack(padx=10, pady=10)
+        
+        # Close button
+        tk.Button(stats_dialog, text="Close", command=stats_dialog.destroy).pack(pady=10)
+        
+        # Clean up temporary file
+        os.remove(temp_file)
     
     def export_csv(self):
         if self.df is None:
